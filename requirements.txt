@@ -4,4 +4,4 @@ requests
 pandas
 qrcode
 pillow
-toml
+tomli
