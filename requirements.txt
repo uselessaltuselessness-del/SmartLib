@@ -2,3 +2,5 @@ streamlit
 firebase-admin
 requests
 pandas
+qrcode
+pillow
