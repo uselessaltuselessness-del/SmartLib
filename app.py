@@ -1,8 +1,6 @@
 import streamlit as st
 
-# ────────────────────────────────────────────────
-# MUST BE THE VERY FIRST STREAMLIT CALL
-# ────────────────────────────────────────────────
+# ── Must be the very first Streamlit call ────────────────────────────────────
 st.set_page_config(page_title="SmartLib System", layout="wide")
 
 import firebase_admin
@@ -13,37 +11,36 @@ import qrcode
 from PIL import Image
 import io
 
-# ────────────────────────────────────────────────
-# 1. FIREBASE INITIALIZATION
-# ────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
+# 1. FIREBASE  —  initialised from st.secrets (mirrors .streamlit/secrets.toml)
+# ────────────────────────────────────────────────────────────────────────────
 db = None
 
 if not firebase_admin._apps:
     try:
-        secret_dict = dict(st.secrets["firebase"])
-        secret_dict["private_key"] = secret_dict["private_key"].replace("\\n", "\n")
-        cred = credentials.Certificate(secret_dict)
+        cred_dict = dict(st.secrets["firebase"])
+        # TOML stores the private key with literal \n — convert to real newlines
+        cred_dict["private_key"] = cred_dict["private_key"].replace("\\n", "\n")
+        cred = credentials.Certificate(cred_dict)
         firebase_admin.initialize_app(cred)
     except Exception as e:
-        st.error(f"Failed to connect to Firebase. Error: {e}")
+        st.error(f"❌ Firebase initialisation failed: {e}")
         st.stop()
 
 try:
     db = firestore.client()
 except Exception as e:
-    st.error(f"Failed to create Firestore client. Error: {e}")
+    st.error(f"❌ Firestore client error: {e}")
     st.stop()
 
-# ────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # 2. QR CODE HELPER
-# ────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 def generate_qr_bytes(payload: str) -> bytes:
     """
-    Generates a QR code PNG from a string payload.
-    Returns raw bytes ready for st.image() or download_button().
-    Uses pil_wrapper.get_image() to access the underlying PIL Image
-    directly, which guarantees .save(buf, format="PNG") works on
-    all versions of the qrcode + Pillow combination.
+    Returns a PNG QR code as raw bytes.
+    Unwraps qrcode's PilImage wrapper to get the real PIL Image before
+    saving — this is reliable across all qrcode + Pillow version combos.
     """
     qr = qrcode.QRCode(
         version=1,
@@ -53,38 +50,35 @@ def generate_qr_bytes(payload: str) -> bytes:
     )
     qr.add_data(payload)
     qr.make(fit=True)
-
     pil_wrapper = qr.make_image(fill_color="black", back_color="white")
     pil_img: Image.Image = pil_wrapper.get_image()   # unwrap to real PIL Image
-
     buf = io.BytesIO()
     pil_img.save(buf, format="PNG")
     buf.seek(0)
     return buf.getvalue()
 
-# ────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # 3. SESSION STATE DEFAULTS
-# ────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 if "user" not in st.session_state:
     st.session_state.user = None
 if "latest_hold" not in st.session_state:
-    # Stores {"hold_id": str, "title": str, "student": str} after a hold is placed
-    st.session_state.latest_hold = None
+    st.session_state.latest_hold = None   # {"hold_id", "title", "student"}
 
 def logout():
     st.session_state.user = None
     st.session_state.latest_hold = None
     st.rerun()
 
-# ────────────────────────────────────────────────
-# 4. HEADER & SIDEBAR AUTH
-# ────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
+# 4. PAGE HEADER + SIDEBAR (CAS GATEWAY)
+# ────────────────────────────────────────────────────────────────────────────
 st.title("📚 SmartLib University Library System")
 st.sidebar.header("🔐 University CAS Gateway")
 
 if st.session_state.user is None:
     st.sidebar.subheader("Login to Access Personal Features")
-    login_email = st.sidebar.text_input("University Email (e.g., student_good@univ.edu)")
+    login_email = st.sidebar.text_input("University Email")
     login_role  = st.sidebar.selectbox("Role", ["Student", "Librarian", "System Administrator"])
 
     if st.sidebar.button("Login via CAS"):
@@ -97,25 +91,28 @@ if st.session_state.user is None:
                 user_data = {"email": login_email, "role": login_role, "fines": 0.0}
                 user_ref.set(user_data)
             st.session_state.user = user_data
-            st.success(f"Logged in as {user_data['email']}")
             st.rerun()
         else:
-            st.sidebar.error("Please enter an email.")
+            st.sidebar.error("Please enter your university email.")
 else:
     st.sidebar.write(f"**Logged in as:** {st.session_state.user['email']}")
     st.sidebar.write(f"**Role:** {st.session_state.user['role']}")
 
     if st.session_state.user["role"] == "Student":
-        live_doc = db.collection("users").document(st.session_state.user["email"]).get()
-        live     = live_doc.to_dict() if live_doc.exists else {}
-        st.sidebar.warning(f"Active Fines: ${live.get('fines', 0.0):.2f}")
+        doc = db.collection("users").document(st.session_state.user["email"]).get()
+        live = doc.to_dict() if doc.exists else {}
+        fines = live.get("fines", 0.0)
+        if fines > 0:
+            st.sidebar.warning(f"Outstanding fines: **${fines:.2f}**")
+        else:
+            st.sidebar.success("No outstanding fines ✅")
 
     if st.sidebar.button("Logout"):
         logout()
 
-# ────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # 5. TAB NAVIGATION
-# ────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 tabs = ["🔍 Public Catalog Search"]
 if st.session_state.user:
     role = st.session_state.user["role"]
@@ -126,111 +123,113 @@ if st.session_state.user:
     elif role == "System Administrator":
         tabs += ["📊 Usage Reports", "⚙️ Permissions Engine"]
 
-active_tab = st.radio("Navigate System Engine:", tabs, horizontal=True)
+active_tab = st.radio("Navigate:", tabs, horizontal=True)
 
-# ════════════════════════════════════════════════
-# TAB 1 — PUBLIC CATALOG SEARCH
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 1 — PUBLIC CATALOG SEARCH  (no login required)
+# ════════════════════════════════════════════════════════════════════════════
 if active_tab == "🔍 Public Catalog Search":
     st.header("Global Catalog Discovery")
-    search_query = st.text_input("Search by Title, Author, or ISBN")
+    query = st.text_input("Search by Title, Author, or ISBN")
 
-    books = [doc.to_dict() for doc in db.collection("books").stream()]
+    books = [d.to_dict() for d in db.collection("books").stream()]
     if books:
         df = pd.DataFrame(books)
-        if search_query:
-            df = df[
-                df["title"].str.contains(search_query, case=False, na=False)  |
-                df["author"].str.contains(search_query, case=False, na=False) |
-                df["isbn"].str.contains(search_query, case=False, na=False)
-            ]
+        if query:
+            mask = (
+                df["title"].str.contains(query, case=False, na=False) |
+                df["author"].str.contains(query, case=False, na=False) |
+                df["isbn"].str.contains(query, case=False, na=False)
+            )
+            df = df[mask]
         st.dataframe(df[["isbn", "title", "author", "available"]], use_container_width=True)
     else:
-        st.info("The catalog is currently empty. Ask a librarian to add books.")
+        st.info("The catalog is empty. Ask a librarian to add books.")
 
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 # TAB 2 — STUDENT: BORROWING & HOLDS
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 elif active_tab == "📖 Book Borrowing & Holds":
     st.header("Physical Book Placements")
 
-    # Always fetch a fresh fine balance
+    # Always fetch a live fine balance (never rely on session state cache)
     live_doc  = db.collection("users").document(st.session_state.user["email"]).get()
     live_user = live_doc.to_dict() if live_doc.exists else {}
-    current_fines = live_user.get("fines", 0.0)
+    fines     = live_user.get("fines", 0.0)
 
-    # ── BUSINESS RULE: block if fines > $10 ────────────────────────────────
-    if current_fines > 10.0:
+    # Business rule: block if fines > $10
+    if fines > 10.0:
         st.error(
-            f"❌ Access Denied: Your account has an unpaid fine of **${current_fines:.2f}**. "
-            "Borrowing is locked until fines are cleared."
+            f"❌ Borrowing locked — outstanding fine: **${fines:.2f}**. "
+            "Please visit the library desk to clear your balance."
         )
     else:
-        st.success("✅ Account Status Clear — Eligible to place holds.")
+        st.success("✅ Account clear — you may place a hold.")
 
-        books_ref       = db.collection("books").where("available", "==", True)
-        available_books = {doc.to_dict()["title"]: doc.id for doc in books_ref.stream()}
+        avail_docs  = db.collection("books").where("available", "==", True).stream()
+        avail_books = {d.to_dict()["title"]: d.id for d in avail_docs}
 
-        if available_books:
-            selected_title = st.selectbox("Select an available book:", list(available_books.keys()))
+        if avail_books:
+            selected = st.selectbox("Select a book:", list(avail_books.keys()))
 
             if st.button("📌 Place a Hold"):
-                book_id  = available_books[selected_title]
-                # .add() returns (update_time, DocumentReference)
+                book_id  = avail_books[selected]
+                # .add() → (WriteResult, DocumentReference)
                 hold_ref = db.collection("holds").add({
                     "student" : st.session_state.user["email"],
                     "book_id" : book_id,
-                    "title"   : selected_title,
+                    "title"   : selected,
                     "status"  : "Active",
                 })
-                new_hold_id = hold_ref[1].id
-
+                hold_id = hold_ref[1].id
                 db.collection("books").document(book_id).update({"available": False})
 
-                # ── Persist hold info BEFORE rerun so QR renders immediately ──
+                # Store in session state BEFORE rerun so QR renders immediately
                 st.session_state.latest_hold = {
-                    "hold_id" : new_hold_id,
-                    "title"   : selected_title,
+                    "hold_id" : hold_id,
+                    "title"   : selected,
                     "student" : st.session_state.user["email"],
                 }
                 st.rerun()
         else:
-            st.info("No books are currently physically available.")
+            st.info("No books currently available for physical loan.")
 
-    # ── IMMEDIATE QR CODE shown right after hold is placed ─────────────────
+    # ── QR banner shown immediately after a successful hold ─────────────────
     if st.session_state.latest_hold:
         lh = st.session_state.latest_hold
         st.divider()
-        st.subheader("🎉 Hold Confirmed — Your Self-Checkout QR Pass")
+        st.subheader("🎉 Hold Confirmed — Self-Checkout QR Pass")
 
-        qr_payload = f"HOLD_ID:{lh['hold_id']}|USER:{lh['student']}"
-        qr_bytes   = generate_qr_bytes(qr_payload)
+        payload  = f"HOLD_ID:{lh['hold_id']}|USER:{lh['student']}"
+        qr_bytes = generate_qr_bytes(payload)
 
-        col_img, col_info = st.columns([1, 2])
-        col_img.image(qr_bytes, width=200, caption="Scan at the self-checkout kiosk")
-        col_info.markdown(f"""
+        c_img, c_info = st.columns([1, 2])
+        c_img.image(qr_bytes, width=200, caption="Scan at the self-checkout kiosk")
+        c_info.markdown(f"""
 **Book:** {lh['title']}  
 **Token ID:** `{lh['hold_id']}`  
 **Student:** {lh['student']}  
 
 Scan this QR code at any self-checkout kiosk to collect your book.
         """)
-        col_info.download_button(
+        c_info.download_button(
             label     = "💾 Download QR Pass (PNG)",
             data      = qr_bytes,
             file_name = f"SmartLib_QR_{lh['hold_id']}.png",
             mime      = "image/png",
-            key       = "latest_qr_download",
+            key       = "latest_qr_dl",
         )
-        if st.button("✅ Done — Dismiss QR"):
+        if st.button("✅ Done — Dismiss"):
             st.session_state.latest_hold = None
             st.rerun()
 
-    # ── ALL ACTIVE HOLDS ────────────────────────────────────────────────────
+    # ── All active holds for this student ───────────────────────────────────
     st.divider()
     st.subheader("Your Active Hold Vouchers")
     my_holds = list(
-        db.collection("holds").where("student", "==", st.session_state.user["email"]).stream()
+        db.collection("holds")
+          .where("student", "==", st.session_state.user["email"])
+          .stream()
     )
 
     if not my_holds:
@@ -238,10 +237,9 @@ Scan this QR code at any self-checkout kiosk to collect your book.
     else:
         for hold in my_holds:
             h = hold.to_dict()
-            with st.expander(f"📘 {h['title']}  —  ID: `{hold.id}`"):
-                qr_payload = f"HOLD_ID:{hold.id}|USER:{h['student']}"
-                qr_bytes   = generate_qr_bytes(qr_payload)
-
+            with st.expander(f"📘 {h['title']}  —  `{hold.id}`"):
+                payload  = f"HOLD_ID:{hold.id}|USER:{h['student']}"
+                qr_bytes = generate_qr_bytes(payload)
                 c1, c2 = st.columns([1, 3])
                 c1.image(qr_bytes, width=150, caption="Scan at Kiosk")
                 c2.write(f"**Token ID:** `{hold.id}`")
@@ -254,67 +252,63 @@ Scan this QR code at any self-checkout kiosk to collect your book.
                     key       = f"dl_{hold.id}",
                 )
 
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 # TAB 3 — STUDENT: DIGITAL RESOURCES
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 elif active_tab == "💻 Digital Resources":
     st.header("Institutional Research Repository")
 
-    mock_papers = [
+    papers = [
         {"title": "Quantum Computation Elements",   "size": "2.4 MB"},
         {"title": "Database Schemas Analysis",       "size": "1.1 MB"},
         {"title": "Modern Cryptography Principles",  "size": "3.7 MB"},
     ]
-    for paper in mock_papers:
-        col1, col2 = st.columns([3, 1])
-        col1.write(f"📄 **{paper['title']}** ({paper['size']})")
-        col2.download_button(
+    for p in papers:
+        c1, c2 = st.columns([3, 1])
+        c1.write(f"📄 **{p['title']}** ({p['size']})")
+        c2.download_button(
             label     = "📥 Download PDF",
-            data      = f"Mock PDF content for: {paper['title']}",
-            file_name = f"{paper['title']}.pdf",
-            key       = f"pdf_{paper['title']}",
+            data      = f"Mock PDF content: {p['title']}",
+            file_name = f"{p['title']}.pdf",
+            key       = f"pdf_{p['title']}",
         )
 
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 # TAB 4 — STUDENT: ROOM RESERVATIONS
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 elif active_tab == "🔑 Room Reservations":
     st.header("Smart Study Room Booking")
 
     with st.form("room_form"):
-        room_selection = st.selectbox("Room", ["Room A — 4 seats", "Room B — 8 seats", "Room C — 12 seats"])
-        time_slot      = st.selectbox("Time Slot", [
+        room   = st.selectbox("Room", ["Room A — 4 seats", "Room B — 8 seats", "Room C — 12 seats"])
+        slot   = st.selectbox("Time Slot", [
             "09:00 AM – 11:00 AM",
             "11:00 AM – 01:00 PM",
             "01:00 PM – 03:00 PM",
             "03:00 PM – 05:00 PM",
         ])
-        group_invites = st.text_area(
-            "Invite Group Members (optional — comma-separated university emails)"
-        )
+        invites = st.text_area("Invite Group Members (optional — comma-separated emails)")
+
         if st.form_submit_button("Confirm Reservation"):
-            invite_list = (
-                [e.strip() for e in group_invites.split(",") if e.strip()]
-                if group_invites else []
-            )
+            invite_list = [e.strip() for e in invites.split(",") if e.strip()] if invites else []
             db.collection("reservations").add({
-                "room"            : room_selection,
-                "slot"            : time_slot,
+                "room"            : room,
+                "slot"            : slot,
                 "reserved_by"     : st.session_state.user["email"],
                 "invited_members" : invite_list,
             })
-            st.success(f"✅ **{room_selection}** locked for **{time_slot}**!")
+            st.success(f"✅ **{room}** reserved for **{slot}**.")
             if invite_list:
-                st.info(f"Invites sent to: {', '.join(invite_list)}")
+                st.info(f"Group members invited: {', '.join(invite_list)}")
 
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 # TAB 5 — LIBRARIAN: CATALOG MANAGEMENT
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 elif active_tab == "📋 Catalog Management":
     st.header("Catalog Management — National Bibliographic API")
 
-    isbn_input = st.text_input("Enter Book ISBN to auto-fetch metadata (e.g., 9780143111597)")
-    if st.button("🔎 Fetch Metadata from National Database"):
+    isbn_input = st.text_input("Enter ISBN to fetch metadata (e.g. 9780143111597)")
+    if st.button("🔎 Fetch from National Database"):
         if isbn_input:
             try:
                 resp = requests.get(
@@ -329,42 +323,42 @@ elif active_tab == "📋 Catalog Management":
                         "authors", [{"name": "Unknown"}]
                     )[0]["name"]
                     st.session_state.fetched_isbn   = isbn_input
-                    st.success("✅ Metadata fetched successfully!")
+                    st.success("✅ Metadata fetched.")
                 else:
-                    st.error("No metadata found for that ISBN.")
+                    st.error("No record found for that ISBN.")
             except Exception as e:
                 st.error(f"API error: {e}")
 
-    title_field  = st.text_input("Book Title",  value=st.session_state.get("fetched_title",  ""))
-    author_field = st.text_input("Author Name", value=st.session_state.get("fetched_author", ""))
-    isbn_field   = st.text_input("ISBN",        value=st.session_state.get("fetched_isbn",   ""))
+    title_f  = st.text_input("Book Title",  value=st.session_state.get("fetched_title",  ""))
+    author_f = st.text_input("Author Name", value=st.session_state.get("fetched_author", ""))
+    isbn_f   = st.text_input("ISBN",        value=st.session_state.get("fetched_isbn",   ""))
 
-    col_add, col_remove = st.columns(2)
-    with col_add:
-        if st.button("➕ Commit to Catalog"):
-            if isbn_field and title_field:
-                db.collection("books").document(isbn_field).set({
-                    "isbn": isbn_field, "title": title_field,
-                    "author": author_field, "available": True,
+    c_add, c_del = st.columns(2)
+    with c_add:
+        if st.button("➕ Add to Catalog"):
+            if isbn_f and title_f:
+                db.collection("books").document(isbn_f).set({
+                    "isbn": isbn_f, "title": title_f,
+                    "author": author_f, "available": True,
                 })
-                st.success(f"📚 *{title_field}* catalogued successfully.")
+                st.success(f"📚 *{title_f}* added.")
             else:
                 st.error("ISBN and Title are required.")
-    with col_remove:
-        remove_isbn = st.text_input("ISBN to Remove")
+    with c_del:
+        rm_isbn = st.text_input("ISBN to remove")
         if st.button("🗑️ Remove from Catalog"):
-            if remove_isbn:
-                db.collection("books").document(remove_isbn).delete()
-                st.success(f"Removed ISBN `{remove_isbn}` from catalog.")
+            if rm_isbn:
+                db.collection("books").document(rm_isbn).delete()
+                st.success(f"Removed `{rm_isbn}` from catalog.")
 
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 # TAB 6 — LIBRARIAN: FINE MANAGEMENT
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 elif active_tab == "💸 Fine Management":
     st.header("Student Fine Management")
 
-    user_list = [u.to_dict() for u in db.collection("users").stream()]
-    students  = [u for u in user_list if u.get("role") == "Student"]
+    all_users = [u.to_dict() for u in db.collection("users").stream()]
+    students  = [u for u in all_users if u.get("role") == "Student"]
 
     if students:
         st.dataframe(
@@ -373,44 +367,41 @@ elif active_tab == "💸 Fine Management":
             ),
             use_container_width=True,
         )
-        target_user    = st.selectbox("Select Student Account", [u["email"] for u in students])
-        fine_increment = st.number_input("Fine Amount to Issue ($)", min_value=0.0, step=0.50)
+        target = st.selectbox("Select student", [u["email"] for u in students])
+        amount = st.number_input("Fine amount ($)", min_value=0.0, step=0.50)
 
         if st.button("💸 Issue Fine"):
-            user_ref  = db.collection("users").document(target_user)
-            cur_fines = user_ref.get().to_dict().get("fines", 0.0)
-            new_fines = cur_fines + fine_increment
-            user_ref.update({"fines": new_fines})
-            st.success(f"Fine issued. **{target_user}** now owes **${new_fines:.2f}**.")
+            ref      = db.collection("users").document(target)
+            cur      = ref.get().to_dict().get("fines", 0.0)
+            new_fine = cur + amount
+            ref.update({"fines": new_fine})
+            st.success(f"Fine issued. **{target}** now owes **${new_fine:.2f}**.")
             st.rerun()
     else:
         st.info("No student accounts found.")
 
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 # TAB 7 — LIBRARIAN: OVERRIDE CONTROLS
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 elif active_tab == "🚫 Override Controls":
     st.header("Room Reservation Override")
 
-    res_list = [{"id": doc.id, **doc.to_dict()} for doc in db.collection("reservations").stream()]
+    res_list = [{"id": d.id, **d.to_dict()} for d in db.collection("reservations").stream()]
     if res_list:
         for res in res_list:
-            col1, col2 = st.columns([4, 1])
-            col1.write(
-                f"🏢 **{res['room']}** · {res['slot']} · "
-                f"Booked by **{res['reserved_by']}**"
-            )
+            c1, c2 = st.columns([4, 1])
+            c1.write(f"🏢 **{res['room']}** · {res['slot']} · booked by **{res['reserved_by']}**")
             if res.get("invited_members"):
-                col1.caption(f"Group: {', '.join(res['invited_members'])}")
-            if col2.button("🚫 Cancel", key=f"cancel_{res['id']}"):
+                c1.caption(f"Group: {', '.join(res['invited_members'])}")
+            if c2.button("🚫 Cancel", key=f"cancel_{res['id']}"):
                 db.collection("reservations").document(res["id"]).delete()
                 st.rerun()
     else:
-        st.info("No active room reservations.")
+        st.info("No active reservations.")
 
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 # TAB 8 — ADMIN: USAGE REPORTS
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 elif active_tab == "📊 Usage Reports":
     st.header("Monthly Usage Analytics")
 
@@ -420,22 +411,22 @@ elif active_tab == "📊 Usage Reports":
     total_users = len(list(db.collection("users").stream()))
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("📚 Catalog Books",    total_books)
+    c1.metric("📚 Books in Catalog", total_books)
     c2.metric("📌 Active Holds",     total_holds)
     c3.metric("🏢 Room Bookings",    total_rooms)
     c4.metric("👤 Registered Users", total_users)
 
     st.divider()
     st.subheader("All Holds Log")
-    holds_data = [{"hold_id": d.id, **d.to_dict()} for d in db.collection("holds").stream()]
-    if holds_data:
-        st.dataframe(pd.DataFrame(holds_data), use_container_width=True)
+    holds = [{"hold_id": d.id, **d.to_dict()} for d in db.collection("holds").stream()]
+    if holds:
+        st.dataframe(pd.DataFrame(holds), use_container_width=True)
     else:
-        st.info("No holds have been placed yet.")
+        st.info("No holds placed yet.")
 
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 # TAB 9 — ADMIN: PERMISSIONS ENGINE
-# ════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 elif active_tab == "⚙️ Permissions Engine":
     st.header("User Permission Management")
 
@@ -445,12 +436,12 @@ elif active_tab == "⚙️ Permissions Engine":
             pd.DataFrame(all_users)[["email", "role", "fines"]],
             use_container_width=True,
         )
-        selected_target = st.selectbox("Target User", [u["email"] for u in all_users])
-        new_role        = st.selectbox("Assign Role", ["Student", "Librarian", "System Administrator"])
+        target  = st.selectbox("Target user", [u["email"] for u in all_users])
+        new_role = st.selectbox("Assign role", ["Student", "Librarian", "System Administrator"])
 
-        if st.button("💾 Save Role Assignment"):
-            db.collection("users").document(selected_target).update({"role": new_role})
-            st.success(f"✅ **{selected_target}** is now a **{new_role}**.")
+        if st.button("💾 Save Assignment"):
+            db.collection("users").document(target).update({"role": new_role})
+            st.success(f"✅ **{target}** is now a **{new_role}**.")
             st.rerun()
     else:
-        st.info("No users registered yet.")
+        st.info("No users found.")
